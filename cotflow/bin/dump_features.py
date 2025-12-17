@@ -79,8 +79,6 @@ def main():
     for k, v in pred0.items():
         g_val.create_dataset(f'jac_predictor_{k}', shape=(N_val, v.shape[1], latent_dim), dtype='f4')
 
-    func_pred = {k: (lambda z: p(autoencoder_model.decode(z))) for k, p in predictors.items()}
-    
     for dataloader, g in [(train_dataloader, g_train), (val_dataloader, g_val)]:
         idx = 0
         for batch in tqdm(dataloader):
@@ -90,7 +88,9 @@ def main():
             z = z.detach()
             jac_pred = {}
             for k, p in predictors.items():
-                jac_pred[k] = torch.func.vmap(torch.func.jacrev(func_pred[k]))(z.unsqueeze(1)).reshape(x.shape[0], -1, latent_dim)
+                jac_pred[k] = torch.func.vmap(torch.func.jacrev(
+                    lambda z: p(autoencoder_model.decode(z)))
+                )(z.unsqueeze(1)).reshape(x.shape[0], -1, latent_dim)
 
             bsz = x.shape[0]
             g['z'][idx:idx+bsz] = z.detach().cpu().numpy()
