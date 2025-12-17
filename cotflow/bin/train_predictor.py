@@ -50,8 +50,9 @@ def main(cfg: DictConfig):
     else:
         autoencoder_model = None
 
-    model = getattr(predictor, cfg.model.name)(**cfg.model.args)
-    pl_module = PredictorLightningModule(model, autoencoder=autoencoder_model, task=cfg.model.task, lr=cfg.optimizer.lr)
+    pl_module = PredictorLightningModule(
+        model_name=cfg.model.name, model_args=cfg.model.args,
+        autoencoder=autoencoder_model, task=cfg.model.task, lr=cfg.optimizer.lr)
 
     # wandb logger
     wandb_logger = WandbLogger(
