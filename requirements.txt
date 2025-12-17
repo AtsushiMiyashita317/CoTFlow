@@ -1,0 +1,8 @@
+torch
+torchvision
+pytorch-lightning
+tqdm
+gdown
+wandb
+hydra-core
+omegaconf

@@ -1,0 +1,56 @@
+# @package _global_
+hydra:
+  run:
+    dir: ./results/${now:%Y-%m-%d_%H-%M-%S}
+
+# データセットと出力パス
+repository_root: null
+exp_name: mnist_autoencoder
+
+seed: 42
+resume: null
+
+# データセット
+train:
+  dataset: 
+    name: DatasetMNIST
+    args:
+      path: ${repository_root}/dataset
+      train: true
+  batch_size: 512
+  num_workers: 4
+val:
+  dataset: 
+    name: DatasetMNIST
+    args:
+      path: ${repository_root}/dataset
+      train: false
+  batch_size: 512
+  num_workers: 4
+
+# モデル
+model:
+  name: Autoencoder
+  args:
+    input_shape: [1, 28, 28]
+    channel_multiplier: 0.7
+    num_layers: 8
+
+loss_fn: mse
+
+optimizer:
+  lr: 1e-3
+  weight_decay: 1e-5
+
+# 学習
+trainer:
+  max_epochs: 50
+  gpus: 1
+  precision: 32
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+
+# wandb
+wandb:
+  project: cotflow_mnist
+  name: ${exp_name}
