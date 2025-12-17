@@ -4,24 +4,33 @@ import h5py
 
 
 class DatasetMNIST(torch.utils.data.Dataset):
-    def __init__(self, path, train=True):
+    def __init__(self, path, train=True, enable_cache=False):
         # load dataset
         self.dataset = tv.datasets.MNIST(
             root=path, 
             train=train, 
             download=True, 
             transform=tv.transforms.ToTensor()
-        )   
+        )
+        self.enable_cache = enable_cache
+        if self.enable_cache:
+            self.cached_data = [None] * len(self.dataset)
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
+        if self.enable_cache and self.cached_data[idx] is not None:
+            return self.cached_data[idx]
+
         img, label = self.dataset[idx]
-        return dict(
+        data = dict(
             image=img,
             label=torch.tensor(label)
         )
+        if self.enable_cache:
+            self.cached_data[idx] = data
+        return data
 
 class Dataset3DShapes(torch.utils.data.Dataset):
     def __init__(self, path):
@@ -55,7 +64,7 @@ class Dataset3DShapes(torch.utils.data.Dataset):
 
 
 class DatasetCelebA(torch.utils.data.Dataset):
-    def __init__(self, path, split='all', image_size=(218, 178)):
+    def __init__(self, path, split='all', image_size=(218, 178), enable_cache=False):
         self.data = tv.datasets.CelebA(
             root=path, 
             split=split,
@@ -66,11 +75,17 @@ class DatasetCelebA(torch.utils.data.Dataset):
                 tv.transforms.ToTensor()
             ])
         )
+        self.enable_cache = enable_cache
+        if self.enable_cache:
+            self.cached_data = [None] * len(self.data)
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
+        if self.enable_cache and self.cached_data[idx] is not None:
+            return self.cached_data[idx]
+
         img, (attr, identity, bbox, landmarks) = self.data[idx]
         bbox = torch.stack(
             (bbox[0] / 178, bbox[1] / 218,
@@ -78,10 +93,13 @@ class DatasetCelebA(torch.utils.data.Dataset):
         )
         landmarks = landmarks.view(-1, 2) / torch.tensor([178.0, 218.0])
         landmarks = landmarks.flatten()
-        return dict(
+        data = dict(
             image=img,
             attr=(attr + 1) // 2,  # -1,1 -> 0,1
             identity=identity - 1,
             bbox=bbox,
             landmark=landmarks
         )
+        if self.enable_cache:
+            self.cached_data[idx] = data
+        return data

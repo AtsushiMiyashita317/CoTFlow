@@ -15,6 +15,7 @@ setup(
         "wandb",
         "hydra-core",
         "omegaconf",
+        "h5py",
     ],
     entry_points={
         "console_scripts": [

@@ -18,6 +18,7 @@ train:
       path: ${repository_root}/dataset
       split: 'train'
       image_size: [218, 178]
+      enable_cache: false
   batch_size: 128
   num_workers: 4
 val:
@@ -27,6 +28,7 @@ val:
       path: ${repository_root}/dataset
       split: 'valid'
       image_size: [218, 178]
+      enable_cache: false
   batch_size: 128
   num_workers: 4
 
