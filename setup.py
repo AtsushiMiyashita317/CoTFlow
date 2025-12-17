@@ -16,11 +16,14 @@ setup(
         "hydra-core",
         "omegaconf",
         "h5py",
+        "normflows @ git+https://github.com/AtsushiMiyashita317/normalizing-flows.git",
     ],
     entry_points={
         "console_scripts": [
             "train_autoencoder=cotflow.bin.train_autoencoder:main",
             "train_predictor=cotflow.bin.train_predictor:main",
+            "train_cotflow=cotflow.bin.train_cotflow:main",
+            "dump_features=cotflow.bin.dump_features:main",
         ],
     },
     include_package_data=True,

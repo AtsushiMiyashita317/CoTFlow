@@ -1,16 +1,24 @@
+import sys
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 
 # 共通LightningModule
 class PredictorLightningModule(pl.LightningModule):
-    def __init__(self, model, autoencoder=None, task='attr', lr=1e-3):
+    def __init__(
+        self, 
+        model_name, 
+        model_args,
+        autoencoder=None, 
+        task='attr', 
+        lr=1e-3
+    ):
         """
         model: nn.Module (出力次元で自動判別)
         task: 'attr', 'identity', 'bbox', 'landmarks'
         """
         super().__init__()
-        self.model = model
+        self.model = getattr(sys.modules[__name__], model_name)(**model_args)
         self.autoencoder = autoencoder
         self.task = task
         self.lr = lr

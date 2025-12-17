@@ -103,3 +103,35 @@ class DatasetCelebA(torch.utils.data.Dataset):
         if self.enable_cache:
             self.cached_data[idx] = data
         return data
+    
+
+class DatasetDumpedFeatures(torch.utils.data.Dataset):
+    def __init__(
+        self, 
+        h5_path, 
+        split='train', 
+        enable_cache=False,
+        target_type=['attr']
+    ):
+        self.h5 = h5py.File(h5_path, 'r')
+        self.z = self.h5[split]['z']
+        self.jac_predictors = {}
+        for name in target_type:
+            dataset_name = f'jac_predictor_{name}'
+            self.jac_predictors[name] = self.h5[split][dataset_name]
+        self.enable_cache = enable_cache
+        if self.enable_cache:
+            self.cached_data = [None] * len(self.z)
+
+    def __len__(self):
+        return self.z.shape[0]
+
+    def __getitem__(self, idx):
+        if self.enable_cache and self.cached_data[idx] is not None:
+            return self.cached_data[idx]
+        z = torch.from_numpy(self.z[idx])
+        jacs = [torch.from_numpy(dataset[idx]) for dataset in self.jac_predictors.values()]
+        jacs = torch.cat(jacs, dim=0)
+        if self.enable_cache:
+            self.cached_data[idx] = (z, jacs)
+        return z, jacs

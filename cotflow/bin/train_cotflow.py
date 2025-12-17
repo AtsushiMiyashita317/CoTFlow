@@ -1,21 +1,20 @@
+
 import os
-import hydra
 import yaml
+import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import cotflow.datasets as datasets
-import cotflow.nets.predictor as predictor
-import cotflow.nets.autoencoder as autoencoder
-from cotflow.nets.autoencoder import AutoencoderModule
-from cotflow.nets.predictor import PredictorLightningModule
 from pytorch_lightning.callbacks import ModelCheckpoint
+
 import cotflow.utils as utils
+from cotflow.nets.autoencoder import AutoencoderModule
+from cotflow.nets.cotflow import CoTFlowModule
 
-
-@hydra.main(config_path=os.path.abspath("config"), config_name='predictor_attr.yaml', version_base=None)
+@hydra.main(config_path=os.path.abspath("config"), config_name='cotflow.yaml', version_base=None)
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
 
@@ -36,22 +35,18 @@ def main(cfg: DictConfig):
     )
 
     # モデル
-    if cfg.autoencoder_ckpt_dir is not None:
-        ckpt_path = os.path.join(cfg.autoencoder_ckpt_dir, "model.ckpt")
-        config_path = os.path.join(cfg.autoencoder_ckpt_dir, "config.yaml")
+    ckpt_path = os.path.join(cfg.autoencoder_ckpt_dir, "model.ckpt")
+    config_path = os.path.join(cfg.autoencoder_ckpt_dir, "config.yaml")
 
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
 
-        autoencoder_module = AutoencoderModule.load_from_checkpoint(
-            ckpt_path, model_name=config['model']['name'], model_args=config['model']['args'])
-        autoencoder_model = autoencoder_module.model
-        autoencoder_model.eval()
-    else:
-        autoencoder_model = None
+    autoencoder_module = AutoencoderModule.load_from_checkpoint(
+        ckpt_path, model_name=config['model']['name'], model_args=config['model']['args'])
+    autoencoder_model = autoencoder_module.model
+    autoencoder_model.eval()
 
-    model = getattr(predictor, cfg.model.name)(**cfg.model.args)
-    pl_module = PredictorLightningModule(model, autoencoder=autoencoder_model, task=cfg.model.task, lr=cfg.optimizer.lr)
+    pl_module = CoTFlowModule(autoencoder_model, cfg.model.args, **cfg.optimizer)
 
     # wandb logger
     wandb_logger = WandbLogger(
@@ -88,4 +83,4 @@ def main(cfg: DictConfig):
     trainer.fit(pl_module, train_loader, val_loader, ckpt_path=cfg.resume)
 
 if __name__ == "__main__":
-    main()
+	main()

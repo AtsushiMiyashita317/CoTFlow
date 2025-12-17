@@ -1,3 +1,4 @@
+import sys
 import torch
 import torchvision as tv
 import pytorch_lightning as pl
@@ -208,13 +209,14 @@ class Autoencoder2D(AbsAutoencoder):
 class AutoencoderModule(pl.LightningModule):
     def __init__(
         self, 
-        model: AbsAutoencoder, 
+        model_name,
+        model_args,
         sample_num=64,
         loss_fn="mse",
         **optimizer_config
     ):
         super().__init__()
-        self.model = model
+        self.model = getattr(sys.modules[__name__], model_name)(**model_args)
         self.recon_imgs = None
         self.original_imgs = None
         self.sample_num = sample_num

@@ -1,1 +1,1 @@
-from .dataset import Dataset3DShapes, DatasetCelebA, DatasetMNIST
+from .dataset import Dataset3DShapes, DatasetCelebA, DatasetMNIST, DatasetDumpedFeatures
