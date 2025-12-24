@@ -44,7 +44,6 @@ model:
     n_blocks: 32
     eps: 1e-3
     scale_map: "sigmoid"
-    x_only: false
 
 optimizer:
   lr: 3e-4
