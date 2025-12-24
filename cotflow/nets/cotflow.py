@@ -274,7 +274,7 @@ class CoTGlow(torch.nn.Module):
         lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 2)
         self.lam = torch.nn.Parameter(lam_data)
 
-        self.log_scale = torch.nn.Parameter(torch.zeros(1) + 14)
+        self.log_scale = torch.nn.Parameter(torch.zeros(1))
 
         self.register_buffer('eps', torch.tensor(eps))
         self.register_buffer('var_w', torch.tensor(-1.0))
@@ -471,7 +471,7 @@ class CoTGlow(torch.nn.Module):
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
         logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
         logdet = logdet + input_dim * self.log_scale
-        logdet = logdet + S_ww.add(1e-3).log()
+        logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
 
         log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
@@ -485,7 +485,7 @@ class CoTGlow(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         z, logdet = self.flow.inverse_and_log_det(x)
-        print(*[z_i.std().item() for z_i in z])
+        print(*[zi.std().item() for zi in z])
         log_prob_x = logdet  # (B,)
         for zi, q0i in zip(z, self.flow.q0):
             log_prob_x = log_prob_x + q0i.log_prob(zi)
@@ -494,19 +494,16 @@ class CoTGlow(torch.nn.Module):
             return log_prob_x, torch.zeros_like(log_prob_x)
 
         w = self.sample_cotangent(x).detach()  # (B, output_dim, input_dim)
-        w0 = w.clone()
-        if self.training:
-            with torch.no_grad():
-                var = w.square().mean(0).sum()
-                if self.var_w.item() < 0:
-                    self.var_w.copy_(var)
-                else:
-                    self.var_w.mul_(0.9).add_(0.1 * var)
-        w = w / self.var_w.clamp_min(1e-6).sqrt()
 
         w = self.pullback_cotangent(w, z)
 
-        log_prob_w = self.log_prob(w, z)  # (B,)
+        logdet_w = 0.0
+        for i in range(len(w)):
+            norm_wi = w[i].square().mean(dim=(-3, -2, -1)).clamp_min(1e-6).sqrt()
+            w[i] = w[i] / norm_wi.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            logdet_w = logdet_w - torch.log(norm_wi)
+
+        log_prob_w = self.log_prob(w, z) + logdet_w  # (B,)
 
         return log_prob_x, log_prob_w
 
