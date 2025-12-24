@@ -35,16 +35,19 @@ def main(cfg: DictConfig):
     )
 
     # モデル
-    ckpt_path = os.path.join(cfg.predictor_ckpt_dir, "model.ckpt")
-    config_path = os.path.join(cfg.predictor_ckpt_dir, "config.yaml")
+    if cfg.predictor_ckpt_dir is None:
+         predictor = None
+    else:
+        ckpt_path = os.path.join(cfg.predictor_ckpt_dir, "model.ckpt")
+        config_path = os.path.join(cfg.predictor_ckpt_dir, "config.yaml")
 
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
 
-    predictor_module = PredictorLightningModule.load_from_checkpoint(
-        ckpt_path, model_name=config['model']['name'], model_args=config['model']['args'], task=config['model']['task'])
-    predictor = predictor_module.model
-    predictor.eval()
+        predictor_module = PredictorLightningModule.load_from_checkpoint(
+            ckpt_path, model_name=config['model']['name'], model_args=config['model']['args'], task=config['model']['task'])
+        predictor = predictor_module.model
+        predictor.eval()
     pl_module = CoTGlowModule(predictor, cfg.model.args, **cfg.optimizer)
 
     # wandb logger
