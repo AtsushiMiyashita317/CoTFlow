@@ -218,7 +218,7 @@ class CoTGlow(torch.nn.Module):
     ):
         super().__init__()
 
-        self.pretrained_model = pretrained_model.eval()
+        self.pretrained_model = pretrained_model
         self.input_shape = input_shape
         self.output_shape = output_shape
 
