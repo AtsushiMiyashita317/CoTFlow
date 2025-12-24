@@ -214,14 +214,12 @@ class CoTGlow(torch.nn.Module):
         n_blocks=32,
         eps=1e-3,
         scale_map="exp_clamp",
-        x_only=False,
     ):
         super().__init__()
 
         self.pretrained_model = pretrained_model.eval()
         self.input_shape = input_shape
         self.output_shape = output_shape
-        self.x_only = x_only
 
         self.num_bases = num_bases
         self.n_levels = n_levels
@@ -404,16 +402,16 @@ class CoTGlow(torch.nn.Module):
         return x
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        w = self.sample_cotangent(x).detach()  # (B, output_dim, input_dim)
 
         z, logdet = self.flow.inverse_and_log_det(x)
         log_prob_x = logdet  # (B,)
         for zi, q0i in zip(z, self.flow.q0):
             log_prob_x = log_prob_x + q0i.log_prob(zi)
 
-        if self.x_only:
+        if self.pretrained_model is None:
             return log_prob_x, torch.zeros_like(log_prob_x)
 
+        w = self.sample_cotangent(x).detach()  # (B, output_dim, input_dim)
         w = self.pullback_cotangent(w, z)
 
         log_prob_w = self.log_prob(w, z) - logdet  # (B,)

@@ -36,7 +36,8 @@ val:
 # モデル例: ランドマーク予測（landmark）
 model:
   name: CelebALandmarkPredictor
-  args: {}
+  args:
+    input_shape: [3, 218, 178]
   task: landmark  # 'attr', 'identity', 'bbox', 'landmarks' から選択
 
 autoencoder_ckpt_dir: ${repository_root}/example/celeba/pretrained/autoencoder
