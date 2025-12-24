@@ -485,7 +485,6 @@ class CoTGlow(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         z, logdet = self.flow.inverse_and_log_det(x)
-        print(*[zi.std().item() for zi in z])
         log_prob_x = logdet  # (B,)
         for zi, q0i in zip(z, self.flow.q0):
             log_prob_x = log_prob_x + q0i.log_prob(zi)

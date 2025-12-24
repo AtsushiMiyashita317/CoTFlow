@@ -82,12 +82,16 @@ def main(cfg: DictConfig):
     if cfg.trainer.backend is not None:
         from pytorch_lightning.strategies import DDPStrategy
         strategy = DDPStrategy(process_group_backend=cfg.trainer.backend, find_unused_parameters=True)
+    elif cfg.trainer.strategy == "ddp":
+        from pytorch_lightning.strategies import DDPStrategy
+        strategy = DDPStrategy(find_unused_parameters=True)
     else:
         strategy = cfg.trainer.strategy
 
     # Trainer
     trainer = pl.Trainer(
         max_epochs=cfg.trainer.max_epochs,
+        accelerator='gpu',
         devices=cfg.trainer.devices,
         num_nodes=cfg.trainer.num_nodes,
         strategy=strategy,
