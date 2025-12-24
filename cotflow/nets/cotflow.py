@@ -209,6 +209,7 @@ class CoTGlow(torch.nn.Module):
         input_shape,
         output_shape,
         num_bases=64,
+        num_parts=1024,
         hidden_channels=512,
         n_levels=6,
         n_blocks=32,
@@ -222,6 +223,7 @@ class CoTGlow(torch.nn.Module):
         self.output_shape = output_shape
 
         self.num_bases = num_bases
+        self.num_parts = num_parts
         self.n_levels = n_levels
 
         L = n_levels
@@ -262,18 +264,28 @@ class CoTGlow(torch.nn.Module):
         latent_channels = [shape[0] for shape in self.latent_shapes]
         latent_channels_total = sum(latent_channels)
 
-        L_data = torch.randn(num_bases, latent_channels_total, latent_channels_total) * (1.0 / math.sqrt(latent_channels_total))
-        self.L = torch.nn.Parameter(L_data)
+        V_data = torch.randn(num_parts, latent_channels_total) / latent_channels_total**0.25
+        self.V = torch.nn.Parameter(V_data)
+        U_data = torch.randn(num_parts, latent_channels_total) / latent_channels_total**0.25
+        self.U = torch.nn.Parameter(U_data)
+        W_data = torch.randn(num_bases, num_parts) / num_parts**0.5
+        self.W = torch.nn.Parameter(W_data)
 
-        lam_data = torch.randn(num_bases, input_shape[1] // 2, input_shape[2] // 2)
+        lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 2)
         self.lam = torch.nn.Parameter(lam_data)
 
+        self.log_scale = torch.nn.Parameter(torch.zeros(1) + 14)
+
         self.register_buffer('eps', torch.tensor(eps))
+        self.register_buffer('var_w', torch.tensor(-1.0))
 
     def parameters(self, recurse = True):
         yield from self.flow.parameters(recurse)
-        yield self.L
+        yield self.U
+        yield self.V
+        yield self.W
         yield self.lam
+        yield self.log_scale
 
     def forward_model(self, x: torch.Tensor) -> torch.Tensor:
         x = x.unsqueeze(0)
@@ -352,6 +364,45 @@ class CoTGlow(torch.nn.Module):
 
         return w
 
+    def forward_vector_field_half(
+            self, 
+            a: list[torch.Tensor], 
+            A: torch.Tensor,
+            alpha: torch.Tensor = None,
+        ) -> torch.Tensor:
+        """
+        Args:
+            a: list of (batch_size, channels_i, height_i, width_i)
+            A: (num_parts, latent_channels_total)
+            alpha: (num_parts, height_max, width_max)
+        Returns:
+            out: (batch_size, num_parts, height_max, width_max)
+        """
+        batch_size = a[0].size(0)
+        num_parts = A.size(0)
+        height_max = a[-1].size(-2)
+        width_max = a[-1].size(-1)
+        channels = [shape[0] for shape in self.latent_shapes]
+        A = torch.split(A.cfloat(), channels, dim=-1)  # list of (num_parts, channels_i)
+        if alpha is not None:
+            alpha = alpha - alpha.flip([1, 2]).roll(shifts=[1, 1], dims=[1, 2]) * 1j
+        out = torch.zeros((batch_size, num_parts, height_max, width_max), device=a[0].device)
+        for ai, Ai in zip(a, A):
+            hi, wi = ai.size(-2), ai.size(-1)
+            ai_upsampled = torch.zeros((ai.size(0), ai.size(1), height_max, width_max), device=ai.device)
+            rh = height_max // hi
+            rw = width_max // wi
+            ai_upsampled[..., ::rh, ::rw] = ai
+            ai_fft = torch.fft.fftn(ai_upsampled, dim=(-2, -1))  # (batch_size, channels_i, H_max, W_max)
+            Aai_fft = torch.einsum('mc,bchw->bmhw', Ai, ai_fft)  # (batch_size, num_parts, H_max, W_max)
+            if alpha is not None:
+                Aai_fft = alpha * Aai_fft  # (batch_size, num_parts, H_max, W_max)
+            Aai = torch.fft.ifftn(Aai_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H_max, W_max)
+            Aai_downsampled = torch.zeros((batch_size, num_parts, height_max, width_max), device=ai.device)
+            Aai_downsampled[..., ::rh, ::rw] = Aai[..., ::rh, ::rw]
+            out = out + Aai_downsampled
+        return out
+
     def log_prob(self, w: list[torch.Tensor], z: list[torch.Tensor]) -> torch.Tensor:
         """
         Args:
@@ -363,36 +414,66 @@ class CoTGlow(torch.nn.Module):
         device = z[0].device
         batch_size = z[0].size(0)
         num_bases = self.num_bases
+        num_parts = self.num_parts
+        input_dim = self.input_shape[0] * self.input_shape[1] * self.input_shape[2]
+
 
         S_ww = torch.zeros(batch_size, device=device)
         for wi in w:
             S_ww = S_ww + torch.einsum('bchw,bchw->b', wi, wi)
 
-        v = self.forward_vector_field(*z)  # list of (batch_size, num_bases, channels_i, H_i, W_i)
+        w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
 
-        S_zz = torch.zeros(batch_size, num_bases, num_bases, device=device)
-        for vi in v:
-            S_zz = S_zz + torch.einsum('bnchw,bmchw->bnm', vi, vi)
+        Vz = self.forward_vector_field_half(z, self.V, self.lam)  # (batch_size, num_parts, H_max, W_max)
+        Uz = self.forward_vector_field_half(z, self.U, self.lam)  # (batch_size, num_parts, H_max, W_max)
+        Vw = self.forward_vector_field_half(w, self.V)            # (batch_size, num_parts, H_max, W_max)
+        Uw = self.forward_vector_field_half(w, self.U)            # (batch_size, num_parts, H_max, W_max)
+        VV = self.V @ self.V.T    # (num_parts, num_parts)
+        UU = self.U @ self.U.T    # (num_parts, num_parts)
+        UV = self.U @ self.V.T    # (num_parts, num_parts)
+
+        # (VU^t - UV^t)^t(VU^t - UV^t) = VU^tUV^t + UV^tVU^t - VU^tUV^t - UV^tVU^t
+        S_zz = torch.zeros(batch_size, num_parts, num_parts, device=device)
+        S_zz = S_zz + torch.einsum('bmhw,bnhw->bmn', Vz, Vz) * UU       # VU^tUV^t
+        S_zz = S_zz + torch.einsum('bmhw,bnhw->bmn', Uz, Uz) * VV       # UV^tVU^t
+        tmp = torch.einsum('bmhw,bnhw->bmn', Vz, Uz) * UV               # VU^tUV^t
+        S_zz = S_zz - tmp - tmp.mT
+        S_zz = torch.einsum('pm,bmn->bpn', self.W, S_zz)
+        S_zz = torch.einsum('qn,bpn->bpq', self.W, S_zz)
         
-        S_zw = torch.zeros(batch_size, num_bases, device=device)
-        for vi, wi in zip(v, w):
-            S_zw = S_zw + torch.einsum('bnchw,bchw->bn', vi, wi)
+        # VU^t - UV^t
+        S_wz = torch.zeros(batch_size, num_parts, device=device)
+        S_wz = S_wz + torch.einsum('bmhw,bmhw->bm', Vw, Uz)             # VU^t
+        S_wz = S_wz - torch.einsum('bmhw,bmhw->bm', Uw, Vz)             # UV^t
+        S_wz = torch.einsum('pm,bm->bp', self.W, S_wz)
 
         var = S_zz.diagonal(dim1=-2, dim2=-1).mean(-1).clamp_min(1e-6)      # (batch_size,)
         std = var.sqrt()
         S_zz = S_zz / var.unsqueeze(-1).unsqueeze(-1)
-        S_zw = S_zw / std.unsqueeze(-1)
-
-        I = torch.eye(num_bases, device=device)
-        M = S_zz + self.eps.unsqueeze(-1).unsqueeze(-1) * I               # (batch_size, num_bases, num_bases)
+        S_wz = S_wz / std.unsqueeze(-1)
 
         # w^t(eI + v^tv)w= e w^tw + w^tv^tvw
-        trace = self.eps * S_ww + torch.einsum('bn,bn->b', S_zw, S_zw)    # (batch_size,)
+        trace = self.eps * S_ww + torch.einsum('bp,bp->b', S_wz, S_wz)    # (batch_size,)
+        trace = trace * self.log_scale.exp()
 
-        L_H = torch.linalg.cholesky(M)
+        I = torch.eye(num_bases, device=device)
+        for i in range(10):
+            eps = self.eps * (2 ** i)
+            M = S_zz + eps.unsqueeze(-1).unsqueeze(-1) * I               # (batch_size, num_bases, num_bases)
+            try:
+                L_H = torch.linalg.cholesky(M)
+            except RuntimeError:
+                if i == 9:
+                    raise
+                continue
+            break
+        
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
+        logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
+        logdet = logdet + input_dim * self.log_scale
+        logdet = logdet + S_ww.add(1e-3).log()
 
-        log_prob = 0.5 * (logdet - trace)
+        log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
         return log_prob
 
@@ -404,6 +485,7 @@ class CoTGlow(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         z, logdet = self.flow.inverse_and_log_det(x)
+        print(*[z_i.std().item() for z_i in z])
         log_prob_x = logdet  # (B,)
         for zi, q0i in zip(z, self.flow.q0):
             log_prob_x = log_prob_x + q0i.log_prob(zi)
@@ -412,9 +494,19 @@ class CoTGlow(torch.nn.Module):
             return log_prob_x, torch.zeros_like(log_prob_x)
 
         w = self.sample_cotangent(x).detach()  # (B, output_dim, input_dim)
+        w0 = w.clone()
+        if self.training:
+            with torch.no_grad():
+                var = w.square().mean(0).sum()
+                if self.var_w.item() < 0:
+                    self.var_w.copy_(var)
+                else:
+                    self.var_w.mul_(0.9).add_(0.1 * var)
+        w = w / self.var_w.clamp_min(1e-6).sqrt()
+
         w = self.pullback_cotangent(w, z)
 
-        log_prob_w = self.log_prob(w, z) - logdet  # (B,)
+        log_prob_w = self.log_prob(w, z)  # (B,)
 
         return log_prob_x, log_prob_w
 

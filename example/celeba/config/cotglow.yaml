@@ -39,6 +39,7 @@ model:
     input_shape: [3, 64, 48]
     output_shape: [40]
     num_bases: 64
+    num_parts: 1024
     hidden_channels: 256
     n_levels: 4
     n_blocks: 32
@@ -55,7 +56,7 @@ trainer:
   devices: "auto"
   num_nodes: 1
   backend: null  # "nccl" or "gloo" or null
-  strategy: null  # "ddp" or null
+  strategy: "auto"  # "ddp" or null
   precision: 32
   log_every_n_steps: 10
   val_check_interval: 1.0
