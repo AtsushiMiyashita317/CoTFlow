@@ -23,6 +23,7 @@ setup(
             "train_autoencoder=cotflow.bin.train_autoencoder:main",
             "train_predictor=cotflow.bin.train_predictor:main",
             "train_cotflow=cotflow.bin.train_cotflow:main",
+            "train_cotglow=cotflow.bin.train_cotglow:main",
             "dump_features=cotflow.bin.dump_features:main",
         ],
     },

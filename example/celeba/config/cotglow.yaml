@@ -1,25 +1,24 @@
 # @package _global_
 hydra:
   run:
-    dir: ./results/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ./results/cotglow/${now:%Y-%m-%d_%H-%M-%S}
 
 # データセットと出力パス
 repository_root: null
-exp_name: celeba_predictor_attr
+exp_name: celeba_glow
 
 seed: 42
 resume: null
 
-# データセット
 train:
   dataset: 
     name: DatasetCelebA
     args:
       path: ${repository_root}/dataset
       split: 'train'
-      image_size: [218, 178]
+      image_size: [64, 48]
       enable_cache: false
-  batch_size: 128
+  batch_size: 16
   num_workers: 4
 val:
   dataset: 
@@ -27,34 +26,42 @@ val:
     args:
       path: ${repository_root}/dataset
       split: 'valid'
-      image_size: [218, 178]
+      image_size: [64, 48]
       enable_cache: false
-  batch_size: 128
+  batch_size: 16
   num_workers: 4
 
+predictor_ckpt_dir: ${repository_root}/example/celeba/pretrained/predictor_attr
 
-# モデル例: 属性予測（attr）
 model:
-  name: CelebAAttrPredictor
-  args:
-    input_shape: [3, 218, 178]
-  task: attr  # 'attr', 'identity', 'bbox', 'landmarks' から選択
-
-autoencoder_ckpt_dir: ${repository_root}/example/celeba/pretrained/autoencoder
+  name: CoTGlow
+  args: 
+    input_shape: [3, 64, 48]
+    output_shape: [40]
+    num_bases: 64
+    hidden_channels: 256
+    n_levels: 4
+    n_blocks: 32
+    eps: 1e-3
+    scale_map: "sigmoid"
+    x_only: false
 
 optimizer:
-  lr: 1e-3
+  lr: 3e-4
   weight_decay: 1e-5
 
 # 学習
 trainer:
   max_epochs: 100
-  gpus: 1
+  devices: "auto"
+  num_nodes: 1
+  backend: null  # "nccl" or "gloo" or null
+  strategy: null  # "ddp" or null
   precision: 32
   log_every_n_steps: 10
   val_check_interval: 1.0
 
 # wandb
 wandb:
-  project: cotflow_celeba
+  project: cotglow_celeba
   name: ${exp_name}

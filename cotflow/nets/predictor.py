@@ -74,80 +74,85 @@ class PredictorLightningModule(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
 
+
+# 属性予測器（40次元属性）
 class CelebAAttrPredictor(nn.Module):
-    """
-    入力: 3x218x178画像 (CelebAフルサイズ)
-    出力: 40次元属性ベクトル
-    """
-    def __init__(self, in_channels=3, num_attrs=40):
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
-            nn.Softplus(),
-            nn.MaxPool2d(2),  # 109x89
-
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.Softplus(),
-            nn.MaxPool2d(2),  # 54x44
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.Softplus(),
-            nn.MaxPool2d(2),  # 27x22
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.Softplus(),
-            nn.MaxPool2d(2),  # 13x11
-        )
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(256 * 13 * 11, 512),
-            nn.Softplus(),
-            nn.Dropout(0.3),
-            nn.Linear(512, num_attrs),
-        )
-
-    def forward(self, x):
-        feat = self.features(x)
-        out = self.classifier(feat)
-        return out
-
-
-# Identity予測器（10177クラス）
-class CelebAIdentityPredictor(nn.Module):
 	"""
 	入力: 3x218x178画像 (CelebAフルサイズ)
-	出力: 10177クラス分類
+	出力: 40次元属性ベクトル
 	"""
-	def __init__(self, in_channels=3, num_classes=10177):
+	def __init__(self, in_channels=3, num_attrs=40, input_shape=(3, 218, 178)):
 		super().__init__()
 		self.features = nn.Sequential(
 			nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(32),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(64),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(128),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(256),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
 		)
+		# 動的に全結合層の入力次元を計算
+		with torch.no_grad():
+			dummy = torch.zeros(1, *input_shape)
+			feat = self.features(dummy)
+			flatten_dim = feat.view(1, -1).shape[1]
 		self.classifier = nn.Sequential(
 			nn.Flatten(),
-			nn.Linear(256 * 13 * 11, 512),
+			nn.Linear(flatten_dim, 512),
+			nn.Softplus(),
+			nn.Dropout(0.3),
+			nn.Linear(512, num_attrs),
+		)
+
+	def forward(self, x):
+		feat = self.features(x)
+		out = self.classifier(feat)
+		return out
+
+
+class CelebAIdentityPredictor(nn.Module):
+	"""
+	入力: 3x218x178画像 (CelebAフルサイズ)
+	出力: 10177クラス分類
+	"""
+	def __init__(self, in_channels=3, num_classes=10177, input_shape=(3, 218, 178)):
+		super().__init__()
+		self.features = nn.Sequential(
+			nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
+			nn.BatchNorm2d(32),
+			nn.Softplus(),
+			nn.MaxPool2d(2),
+			nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+			nn.BatchNorm2d(64),
+			nn.Softplus(),
+			nn.MaxPool2d(2),
+			nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+			nn.BatchNorm2d(128),
+			nn.Softplus(),
+			nn.MaxPool2d(2),
+			nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+			nn.BatchNorm2d(256),
+			nn.Softplus(),
+			nn.MaxPool2d(2),
+		)
+		# 動的に全結合層の入力次元を計算
+		with torch.no_grad():
+			dummy = torch.zeros(1, *input_shape)
+			feat = self.features(dummy)
+			flatten_dim = feat.view(1, -1).shape[1]
+		self.classifier = nn.Sequential(
+			nn.Flatten(),
+			nn.Linear(flatten_dim, 512),
 			nn.Softplus(),
 			nn.Dropout(0.3),
 			nn.Linear(512, num_classes),
@@ -165,32 +170,33 @@ class CelebABBoxPredictor(nn.Module):
 	入力: 3x218x178画像 (CelebAフルサイズ)
 	出力: 4次元バウンディングボックス (x, y, w, h)
 	"""
-	def __init__(self, in_channels=3, out_dim=4):
+	def __init__(self, in_channels=3, out_dim=4, input_shape=(3, 218, 178)):
 		super().__init__()
 		self.features = nn.Sequential(
 			nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(32),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(64),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(128),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(256),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
 		)
+		with torch.no_grad():
+			dummy = torch.zeros(1, *input_shape)
+			feat = self.features(dummy)
+			flatten_dim = feat.view(1, -1).shape[1]
 		self.regressor = nn.Sequential(
 			nn.Flatten(),
-			nn.Linear(256 * 13 * 11, 256),
+			nn.Linear(flatten_dim, 256),
 			nn.Softplus(),
 			nn.Linear(256, out_dim),
 		)
@@ -207,32 +213,33 @@ class CelebALandmarkPredictor(nn.Module):
 	入力: 3x218x178画像 (CelebAフルサイズ)
 	出力: 10次元ランドマーク座標
 	"""
-	def __init__(self, in_channels=3, out_dim=10):
+	def __init__(self, in_channels=3, out_dim=10, input_shape=(3, 218, 178)):
 		super().__init__()
 		self.features = nn.Sequential(
 			nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(32),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(64),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(128),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
-
 			nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
 			nn.BatchNorm2d(256),
 			nn.Softplus(),
 			nn.MaxPool2d(2),
 		)
+		with torch.no_grad():
+			dummy = torch.zeros(1, *input_shape)
+			feat = self.features(dummy)
+			flatten_dim = feat.view(1, -1).shape[1]
 		self.regressor = nn.Sequential(
 			nn.Flatten(),
-			nn.Linear(256 * 13 * 11, 256),
+			nn.Linear(flatten_dim, 256),
 			nn.Softplus(),
 			nn.Linear(256, out_dim),
 		)
@@ -241,7 +248,3 @@ class CelebALandmarkPredictor(nn.Module):
 		feat = self.features(x)
 		out = self.regressor(feat)
 		return out
-
-
-
-
