@@ -432,7 +432,7 @@ class CoTGlow(torch.nn.Module):
         for wi in w:
             S_ww = S_ww + torch.einsum('bchw,bchw->b', wi, wi)
 
-        w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
+        # w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
 
         Vz = self.forward_vector_field_half(z, self.V, self.lam)  # (batch_size, num_parts, H_max, W_max)
         Uz = self.forward_vector_field_half(z, self.U, self.lam)  # (batch_size, num_parts, H_max, W_max)
@@ -481,7 +481,7 @@ class CoTGlow(torch.nn.Module):
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
         logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
         logdet = logdet + input_dim * self.log_scale
-        logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
+        # logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
 
         log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
@@ -511,9 +511,9 @@ class CoTGlow(torch.nn.Module):
         for i in range(len(w)):
             norm_wi = w[i].square().mean(dim=(-3, -2, -1)).clamp_min(1e-6).sqrt()
             w[i] = w[i] / norm_wi.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            logdet_w = logdet_w - torch.log(norm_wi)
+            logdet_w = logdet_w - torch.log(norm_wi) * w[i][0].numel()  # (B,)
 
-        log_prob_w = self.log_prob(w, z) + logdet_w  # (B,)
+        log_prob_w = self.log_prob(w, z) + logdet_w - logdet  # (B,)
 
         return log_prob_x, log_prob_w
 
