@@ -558,69 +558,69 @@ class CoTGlowModule(pl.LightningModule):
 
         # Collect std of Split([z1, z2]) outputs in execution order and log to wandb.
         # Requirement: install/remove hooks and collect data here (line ~548).
-        split_stats: list[float] = []
-        convnet2d_stats: list[tuple[float, str]] = []
-        hook_handles: list[torch.utils.hooks.RemovableHandle] = []
+        # split_stats: list[float] = []
+        # convnet2d_stats: list[tuple[float, str]] = []
+        # hook_handles: list[torch.utils.hooks.RemovableHandle] = []
 
-        def _split_forward_hook(_module, _inputs, output):
-            # Split.forward returns: ([z1, z2], log_det)
-            try:
-                z_list = output[0]
-                if not isinstance(z_list, (list, tuple)) or len(z_list) != 2:
-                    return
-                z1, z2 = z_list
-                z = torch.cat([z1, z2], dim=1)
-                # Use population std (unbiased=False) for stability and log scalar.
-                std = z.detach().float().std(unbiased=False).item()
-                split_stats.append(std)
-            except Exception:
-                # Never break training due to debug logging.
-                return
+        # def _split_forward_hook(_module, _inputs, output):
+        #     # Split.forward returns: ([z1, z2], log_det)
+        #     try:
+        #         z_list = output[0]
+        #         if not isinstance(z_list, (list, tuple)) or len(z_list) != 2:
+        #             return
+        #         z1, z2 = z_list
+        #         z = torch.cat([z1, z2], dim=1)
+        #         # Use population std (unbiased=False) for stability and log scalar.
+        #         std = z.detach().float().std(unbiased=False).item()
+        #         split_stats.append(std)
+        #     except Exception:
+        #         # Never break training due to debug logging.
+        #         return
 
-        def _convnet2d_forward_hook(_module, _inputs, output):
-            # ConvNet2d.forward returns a Tensor.
-            try:
-                if not torch.is_tensor(output):
-                    return
-                y = output.detach().float()
-                std = y.std(unbiased=False).item()
-                convnet2d_stats.append(std)
-            except Exception:
-                return
+        # def _convnet2d_forward_hook(_module, _inputs, output):
+        #     # ConvNet2d.forward returns a Tensor.
+        #     try:
+        #         if not torch.is_tensor(output):
+        #             return
+        #         y = output.detach().float()
+        #         std = y.std(unbiased=False).item()
+        #         convnet2d_stats.append(std)
+        #     except Exception:
+        #         return
 
-        # Attach hooks to all Split / ConvNet2d submodules under the flow.
-        for m in self.model.flow.modules():
-            if isinstance(m, NFFSplit):
-                hook_handles.append(m.register_forward_hook(_split_forward_hook))
-            if isinstance(m, NFConvNet2d):
-                hook_handles.append(m.register_forward_hook(_convnet2d_forward_hook))
+        # # Attach hooks to all Split / ConvNet2d submodules under the flow.
+        # for m in self.model.flow.modules():
+        #     if isinstance(m, NFFSplit):
+        #         hook_handles.append(m.register_forward_hook(_split_forward_hook))
+        #     if isinstance(m, NFConvNet2d):
+        #         hook_handles.append(m.register_forward_hook(_convnet2d_forward_hook))
 
-        try:
-            _ = self.model.flow.inverse_and_log_det(x)
-        finally:
-            for h in hook_handles:
-                try:
-                    h.remove()
-                except Exception:
-                    pass
+        # try:
+        #     _ = self.model.flow.inverse_and_log_det(x)
+        # finally:
+        #     for h in hook_handles:
+        #         try:
+        #             h.remove()
+        #         except Exception:
+        #             pass
 
-        if split_stats:
-            wandb_logger = self.logger
-            if hasattr(wandb_logger, "experiment"):
-                table = wandb.Table(columns=["step", "call_index", "z_std"])
-                for i, std in enumerate(split_stats):
-                    table.add_data(self.global_step, i, std)
-                wandb_logger.experiment.log({"debug/split_output_std_table": table,})
+        # if split_stats:
+        #     wandb_logger = self.logger
+        #     if hasattr(wandb_logger, "experiment"):
+        #         table = wandb.Table(columns=["step", "call_index", "z_std"])
+        #         for i, std in enumerate(split_stats):
+        #             table.add_data(self.global_step, i, std)
+        #         wandb_logger.experiment.log({"debug/split_output_std_table": table,})
 
-        if convnet2d_stats:
-            wandb_logger = self.logger
-            if hasattr(wandb_logger, "experiment"):
-                table = wandb.Table(
-                    columns=["step", "call_index", "std"]
-                )
-                for i, std in enumerate(convnet2d_stats):
-                    table.add_data(self.global_step, i, std)
-                wandb_logger.experiment.log({"debug/convnet2d_output_std_table": table,})
+        # if convnet2d_stats:
+        #     wandb_logger = self.logger
+        #     if hasattr(wandb_logger, "experiment"):
+        #         table = wandb.Table(
+        #             columns=["step", "call_index", "std"]
+        #         )
+        #         for i, std in enumerate(convnet2d_stats):
+        #             table.add_data(self.global_step, i, std)
+        #         wandb_logger.experiment.log({"debug/convnet2d_output_std_table": table,})
 
         return loss
 
