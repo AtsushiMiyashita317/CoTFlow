@@ -395,9 +395,8 @@ class CoTGlow(torch.nn.Module):
         channels = [shape[0] for shape in self.latent_shapes]
         A = torch.split(A, channels, dim=-1)  # list of (num_parts, channels_i)
         if alpha is not None:
-            alpha = alpha - alpha.flip([1, 2])
-            alpha = alpha.roll(shifts=[-(alpha.size(-2) // 2), -(alpha.size(-1) // 2)], dims=[-2, -1])
-            alpha = torch.fft.fftn(alpha, dim=(-2, -1))
+            alpha = alpha - alpha.flip([1, 2]).roll(shifts=[1, 1], dims=[1, 2])
+            alpha = alpha * 1j
         out = torch.zeros((batch_size, num_parts, height_max, width_max), device=a[0].device)
         for ai, Ai in zip(a, A):
             hi, wi = ai.size(-2), ai.size(-1)
