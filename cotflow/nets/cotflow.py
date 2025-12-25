@@ -393,23 +393,24 @@ class CoTGlow(torch.nn.Module):
         height_max = a[-1].size(-2)
         width_max = a[-1].size(-1)
         channels = [shape[0] for shape in self.latent_shapes]
-        A = torch.split(A.cfloat(), channels, dim=-1)  # list of (num_parts, channels_i)
+        A = torch.split(A, channels, dim=-1)  # list of (num_parts, channels_i)
         if alpha is not None:
-            alpha = alpha - alpha.flip([1, 2]).roll(shifts=[1, 1], dims=[1, 2]) * 1j
+            alpha = alpha - alpha.flip([1, 2])
+            alpha = alpha.roll(shifts=[-(alpha.size(-2) // 2), -(alpha.size(-1) // 2)], dims=[-2, -1])
+            alpha = torch.fft.fftn(alpha, dim=(-2, -1))
         out = torch.zeros((batch_size, num_parts, height_max, width_max), device=a[0].device)
         for ai, Ai in zip(a, A):
             hi, wi = ai.size(-2), ai.size(-1)
-            ai_upsampled = torch.zeros((ai.size(0), ai.size(1), height_max, width_max), device=ai.device)
             rh = height_max // hi
             rw = width_max // wi
-            ai_upsampled[..., ::rh, ::rw] = ai
-            ai_fft = torch.fft.fftn(ai_upsampled, dim=(-2, -1))  # (batch_size, channels_i, H_max, W_max)
-            Aai_fft = torch.einsum('mc,bchw->bmhw', Ai, ai_fft)  # (batch_size, num_parts, H_max, W_max)
+            Aai = torch.einsum('mc,bchw->bmhw', Ai, ai)  # (batch_size, num_parts, H_i, W_i)
             if alpha is not None:
-                Aai_fft = alpha * Aai_fft  # (batch_size, num_parts, H_max, W_max)
-            Aai = torch.fft.ifftn(Aai_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H_max, W_max)
+                Aai_fft = torch.fft.fftn(Aai, dim=(-2, -1))  # (batch_size, num_parts, Hi, W_i)
+                alpha_i = alpha.reshape(-1, rh, hi, rw, wi).mean(dim=(-4,-2))  # (num_parts, H_i, W_i)
+                Aai_fft = alpha_i * Aai_fft  # (batch_size, num_parts, H_i, W_i)
+                Aai = torch.fft.ifftn(Aai_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H_i, W_i)
             Aai_downsampled = torch.zeros((batch_size, num_parts, height_max, width_max), device=ai.device)
-            Aai_downsampled[..., ::rh, ::rw] = Aai[..., ::rh, ::rw]
+            Aai_downsampled[..., ::rh, ::rw] = Aai
             out = out + Aai_downsampled
         return out
 
