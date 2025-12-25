@@ -521,47 +521,6 @@ class CoTGlowModule(pl.LightningModule):
         self.sample_num = sample_num
 
         self.optimizer_kwargs = optimizer_kwargs
-
-        # Debug toggle (can also be set via: pl_module.check_cpu_tensors = True)
-        self.check_cpu_tensors = False
-        # If True, raise an error when CPU buffers/params are found during DDP.
-        self.raise_on_cpu_tensors = True
-
-    def on_fit_start(self) -> None:
-        """DDP debug helper: detect CPU buffers/params that would break buffer sync.
-
-        Run on rank 0 only to avoid log spam.
-        """
-        if not getattr(self, "check_cpu_tensors", False):
-            return
-
-        # In DDP, this is safe and defined. In single process, this is 0.
-        rank = 0
-        try:
-            rank = int(getattr(self.trainer, "global_rank", 0))
-        except Exception:
-            rank = 0
-
-        if rank != 0:
-            return
-
-        cpu_buffers = [(n, b.dtype, tuple(b.shape)) for n, b in self.named_buffers() if b.device.type == "cpu"]
-        cpu_params = [(n, p.dtype, tuple(p.shape)) for n, p in self.named_parameters() if p.device.type == "cpu"]
-
-        if cpu_buffers or cpu_params:
-            msg_lines = ["[DDP-DEBUG] Found CPU tensors at fit start:"]
-            if cpu_buffers:
-                msg_lines.append("  CPU buffers:")
-                msg_lines += [f"    - {n} | {dt} | {sh}" for n, dt, sh in cpu_buffers]
-            if cpu_params:
-                msg_lines.append("  CPU parameters:")
-                msg_lines += [f"    - {n} | {dt} | {sh}" for n, dt, sh in cpu_params]
-            msg = "\n".join(msg_lines)
-
-            if getattr(self, "raise_on_cpu_tensors", True):
-                raise RuntimeError(msg)
-            else:
-                print(msg)
     
     def forward(self, x):
         return self.model(x)
