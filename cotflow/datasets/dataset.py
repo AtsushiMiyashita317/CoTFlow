@@ -64,7 +64,14 @@ class Dataset3DShapes(torch.utils.data.Dataset):
 
 
 class DatasetCelebA(torch.utils.data.Dataset):
-    def __init__(self, path, split='all', image_size=(218, 178), enable_cache=False):
+    def __init__(
+        self, 
+        path, 
+        split='all', 
+        image_size=(218, 178), 
+        enable_cache=False,
+        bits=5,
+    ):
         self.data = tv.datasets.CelebA(
             root=path, 
             split=split,
@@ -75,6 +82,7 @@ class DatasetCelebA(torch.utils.data.Dataset):
                 tv.transforms.ToTensor()
             ])
         )
+        self.bits = bits
         self.enable_cache = enable_cache
         if self.enable_cache:
             self.cached_data = [None] * len(self.data)
@@ -87,6 +95,10 @@ class DatasetCelebA(torch.utils.data.Dataset):
             return self.cached_data[idx]
 
         img, (attr, identity, bbox, landmarks) = self.data[idx]
+        img = img * 255.0
+        img = torch.floor(img / 2 ** (8 - self.bits))
+        img = img + torch.rand_like(img)  # dequantization
+        img = img / 2 ** self.bits  # rescale to [0,1]
         bbox = torch.stack(
             (bbox[0] / 178, bbox[1] / 218,
             (bbox[0] + bbox[2]) / 178, (bbox[1] + bbox[3]) / 218)

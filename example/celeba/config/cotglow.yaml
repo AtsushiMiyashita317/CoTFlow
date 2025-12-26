@@ -18,6 +18,7 @@ train:
       split: 'train'
       image_size: [64, 48]
       enable_cache: false
+      bits: 5
   batch_size: 16
   num_workers: 4
 val:
@@ -28,6 +29,7 @@ val:
       split: 'valid'
       image_size: [64, 48]
       enable_cache: false
+      bits: 5
   batch_size: 16
   num_workers: 4
 
