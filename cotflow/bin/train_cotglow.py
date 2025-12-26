@@ -48,7 +48,8 @@ def main(cfg: DictConfig):
             ckpt_path, model_name=config['model']['name'], model_args=config['model']['args'], task=config['model']['task'])
         predictor = predictor_module.model
         predictor.eval()
-    pl_module = CoTGlowModule(predictor, cfg.model.args, **cfg.optimizer)
+    print(cfg.warmup_steps)
+    pl_module = CoTGlowModule(predictor, cfg.model.args, cfg.warmup_steps, **cfg.optimizer)
 
     # wandb logger
     wandb_logger = WandbLogger(

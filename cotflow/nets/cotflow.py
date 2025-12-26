@@ -217,6 +217,7 @@ class CoTGlow(torch.nn.Module):
         n_blocks=32,
         eps=1e-3,
         max_log_abs_scale=0.1,
+        jacobian_mode="cancel"
     ):
         super().__init__()
 
@@ -225,6 +226,7 @@ class CoTGlow(torch.nn.Module):
         self.output_shape = output_shape
 
         self.max_log_abs_scale = max_log_abs_scale
+        self.jacobian_mode = jacobian_mode
 
         self.num_bases = num_bases
         self.num_parts = num_parts
@@ -432,7 +434,8 @@ class CoTGlow(torch.nn.Module):
         for wi in w:
             S_ww = S_ww + torch.einsum('bchw,bchw->b', wi, wi)
 
-        w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
+        if self.jacobian_mode == "approx":
+            w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
 
         Vz = self.forward_vector_field_half(z, self.V, self.lam)  # (batch_size, num_parts, H_max, W_max)
         Uz = self.forward_vector_field_half(z, self.U, self.lam)  # (batch_size, num_parts, H_max, W_max)
@@ -481,7 +484,8 @@ class CoTGlow(torch.nn.Module):
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
         logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
         logdet = logdet + input_dim * self.log_scale
-        logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
+        if self.jacobian_mode == "approx":
+            logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
 
         log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
@@ -514,6 +518,8 @@ class CoTGlow(torch.nn.Module):
             logdet_w = logdet_w - torch.log(norm_wi) * w[i][0].numel()  # (B,)
 
         log_prob_w = self.log_prob(w, z) + logdet_w  # (B,)
+        if self.jacobian_mode == "cancel":
+            log_prob_w = log_prob_w - logdet
 
         return log_prob_x, log_prob_w
 
@@ -524,6 +530,7 @@ class CoTGlowModule(pl.LightningModule):
         pretrained_model: torch.nn.Module,
         flow_kwargs,
         sample_num=64,
+        warmup_steps=1,
         **optimizer_kwargs,
     ):
         super().__init__()
@@ -531,6 +538,7 @@ class CoTGlowModule(pl.LightningModule):
         self.model = CoTGlow(pretrained_model, **flow_kwargs)
         self.sample_num = sample_num
 
+        self.warmup_steps = warmup_steps
         self.optimizer_kwargs = optimizer_kwargs
     
     def forward(self, x):
@@ -637,4 +645,15 @@ class CoTGlowModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adamax(self.model.parameters(), **self.optimizer_kwargs)
-        return optimizer
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lambda step: min((step + 1) / self.warmup_steps, 1.0)
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step',
+                'frequency': 1,
+            }
+        }
