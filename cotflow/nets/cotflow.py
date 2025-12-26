@@ -587,6 +587,7 @@ class CoTGlowModule(pl.LightningModule):
         flow_kwargs,
         sample_num=64,
         warmup_steps=1,
+        beta=0.5,
         **optimizer_kwargs,
     ):
         super().__init__()
@@ -594,6 +595,7 @@ class CoTGlowModule(pl.LightningModule):
         self.model = CoTGlow(pretrained_model, **flow_kwargs)
         self.sample_num = sample_num
 
+        self.beta = beta
         self.warmup_steps = warmup_steps
         self.optimizer_kwargs = optimizer_kwargs
     
@@ -706,7 +708,7 @@ class CoTGlowModule(pl.LightningModule):
         trace_w = trace_w.mean()
         logdet_x = logdet_x.mean()
         logdet_w = logdet_w.mean()
-        loss = - (log_prob_x + log_prob_w)
+        loss = - 2 * (log_prob_x * (1 - self.beta) + log_prob_w * self.beta)
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_log_prob_x', log_prob_x, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_log_prob_w', log_prob_w, on_step=False, on_epoch=True, prog_bar=False)

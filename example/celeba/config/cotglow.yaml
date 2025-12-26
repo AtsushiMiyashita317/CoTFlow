@@ -53,6 +53,7 @@ optimizer:
   lr: 3e-4
   weight_decay: 1e-5
 warmup_steps: 10000
+beta: 0.5
 
 # 学習
 trainer:
