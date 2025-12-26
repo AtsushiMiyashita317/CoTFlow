@@ -49,7 +49,12 @@ def main(cfg: DictConfig):
         predictor = predictor_module.model
         predictor.eval()
     print(cfg.warmup_steps)
-    pl_module = CoTGlowModule(predictor, cfg.model.args, cfg.warmup_steps, **cfg.optimizer)
+    pl_module = CoTGlowModule(
+         predictor, 
+         cfg.model.args, 
+         warmup_steps=cfg.warmup_steps, 
+         **cfg.optimizer
+    )
 
     # wandb logger
     wandb_logger = WandbLogger(
