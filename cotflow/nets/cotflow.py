@@ -621,7 +621,7 @@ class CoTGlowModule(pl.LightningModule):
         trace_w = trace_w.mean()
         logdet_x = logdet_x.mean()
         logdet_w = logdet_w.mean()
-        loss = - (log_prob_x + log_prob_w)
+        loss = - 2 * (log_prob_x * (1 - self.beta) + log_prob_w * self.beta)
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_log_prob_x', log_prob_x, on_step=True, on_epoch=True, prog_bar=False)
         self.log('train_log_prob_w', log_prob_w, on_step=True, on_epoch=True, prog_bar=False)
