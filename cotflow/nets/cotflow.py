@@ -239,6 +239,7 @@ class CoTGlow(torch.nn.Module):
         q0 = []
         merges = []
         flows = []
+        norms = []
         self.latent_shapes = []
         for i in range(L):
             flows_ = []
@@ -261,11 +262,14 @@ class CoTGlow(torch.nn.Module):
                                 input_shape[2] // 2 ** L)
             self.latent_shapes.append(latent_shape)
             q0 += [nf.distributions.DiagGaussian(latent_shape, trainable=False)]
+            norms += [nf.flows.ActNorm((latent_shape[0], 1, 1))]
 
         transform = nf.transforms.Loft()
 
         # Construct flow model with the multiscale architecture
         self.flow = nf.MultiscaleFlow(q0, flows, merges, transform)
+
+        self.norm_cotangent = torch.nn.ModuleList(norms)
 
         latent_channels = [shape[0] for shape in self.latent_shapes]
         latent_channels_total = sum(latent_channels)
@@ -280,7 +284,8 @@ class CoTGlow(torch.nn.Module):
         lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 2)
         self.lam = torch.nn.Parameter(lam_data)
 
-        self.log_scale = torch.nn.Parameter(torch.zeros(1))
+        self.register_buffer('log_scale_init_done', torch.tensor(0))
+        self.register_buffer('log_scale', torch.tensor(0.0))
 
         self.register_buffer('eps', torch.tensor(eps))
         self.register_buffer('var_w', torch.tensor(-1.0))
@@ -378,41 +383,50 @@ class CoTGlow(torch.nn.Module):
 
     def forward_vector_field_half(
             self, 
-            a: list[torch.Tensor], 
+            a: torch.Tensor, 
             A: torch.Tensor,
             alpha: torch.Tensor = None,
         ) -> torch.Tensor:
         """
         Args:
-            a: list of (batch_size, channels_i, height_i, width_i)
+            a: (batch_size, channels_total, height, width)
             A: (num_parts, latent_channels_total)
-            alpha: (num_parts, height_max, width_max)
+            alpha: (num_parts, height, width)
         Returns:
-            out: (batch_size, num_parts, height_max, width_max)
+            out: (batch_size, num_parts, height, width)
         """
-        batch_size = a[0].size(0)
-        num_parts = A.size(0)
-        height_max = a[-1].size(-2)
-        width_max = a[-1].size(-1)
-        channels = [shape[0] for shape in self.latent_shapes]
-        A = torch.split(A, channels, dim=-1)  # list of (num_parts, channels_i)
+        Aa = torch.einsum('mc,bchw->bmhw', A, a)  # (batch_size, num_parts, H, W)
+
         if alpha is not None:
             alpha = alpha - alpha.flip([1, 2]).roll(shifts=[1, 1], dims=[1, 2])
             alpha = alpha * 1j
-        out = torch.zeros((batch_size, num_parts, height_max, width_max), device=a[0].device)
-        for ai, Ai in zip(a, A):
-            hi, wi = ai.size(-2), ai.size(-1)
+
+            Aa_fft = torch.fft.fftn(Aa, dim=(-2, -1))  # (batch_size, num_parts, H, W)
+            Aa_fft = alpha.unsqueeze(0) * Aa_fft  # (batch_size, num_parts, H, W)
+            Aa = torch.fft.ifftn(Aa_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H, W)
+        
+        return Aa  # (batch_size, num_parts, H, W)
+    
+    def compute_S(
+        self, 
+        Az: torch.Tensor,
+        Bz: torch.Tensor,
+        CD: list[torch.Tensor]
+    ) -> torch.Tensor:
+        heights = [shape[1] for shape in self.latent_shapes]
+        widths = [shape[2] for shape in self.latent_shapes]
+        height_max = max(heights)
+        width_max = max(widths)
+
+        out = torch.zeros(Az.size(0), Az.size(1), Bz.size(1), device=Az.device)
+
+        for CDi, hi, wi in zip(CD, heights, widths):
             rh = height_max // hi
             rw = width_max // wi
-            Aai = torch.einsum('mc,bchw->bmhw', Ai, ai)  # (batch_size, num_parts, H_i, W_i)
-            if alpha is not None:
-                Aai_fft = torch.fft.fftn(Aai, dim=(-2, -1))  # (batch_size, num_parts, Hi, W_i)
-                alpha_i = alpha.reshape(-1, rh, hi, rw, wi).mean(dim=(-4,-2))  # (num_parts, H_i, W_i)
-                Aai_fft = alpha_i * Aai_fft  # (batch_size, num_parts, H_i, W_i)
-                Aai = torch.fft.ifftn(Aai_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H_i, W_i)
-            Aai_downsampled = torch.zeros((batch_size, num_parts, height_max, width_max), device=ai.device)
-            Aai_downsampled[..., ::rh, ::rw] = Aai
-            out = out + Aai_downsampled
+            Az_i = Az[..., ::rh, ::rw]  # (batch_size, num_parts, hi, wi)
+            Bz_i = Bz[..., ::rh, ::rw]  # (batch_size, num_parts, hi, wi)
+            out = out + torch.einsum('bmhw,bnhw->bmn', Az_i, Bz_i) * CDi
+
         return out
 
     def log_prob(self, w: list[torch.Tensor], z: list[torch.Tensor]) -> torch.Tensor:
@@ -427,29 +441,54 @@ class CoTGlow(torch.nn.Module):
         batch_size = z[0].size(0)
         num_bases = self.num_bases
         num_parts = self.num_parts
+        height_max = z[-1].size(-2)
+        width_max = z[-1].size(-1)
         input_dim = self.input_shape[0] * self.input_shape[1] * self.input_shape[2]
-
-
-        S_ww = torch.zeros(batch_size, device=device)
-        for wi in w:
-            S_ww = S_ww + torch.einsum('bchw,bchw->b', wi, wi)
+        channels = [shape[0] for shape in self.latent_shapes]
 
         if self.jacobian_mode == "approx":
             w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
+
+        # upsampling
+        w_upsampled = []
+        z_upsampled = []
+        for wi, zi, shape_i in zip(w, z, self.latent_shapes):
+            hi, wi_ = shape_i[1], shape_i[2]
+            rh = height_max // hi
+            rw = width_max // wi_
+            wi_upsampled = torch.zeros((wi.size(0), wi.size(1), height_max, width_max), device=wi.device)
+            zi_upsampled = torch.zeros((zi.size(0), zi.size(1), height_max, width_max), device=zi.device)
+            wi_upsampled[..., ::rh, ::rw] = wi
+            zi_upsampled[..., ::rh, ::rw] = zi
+            w_upsampled.append(wi_upsampled)
+            z_upsampled.append(zi_upsampled)
+        w = torch.cat(w_upsampled, dim=-3)  # (batch_size, channels_total, H, W)
+        z = torch.cat(z_upsampled, dim=-3)  # (batch_size, channels_total, H, W)
+
+        S_ww = torch.einsum('bchw,bchw->b', w, w)    # (batch_size,)
 
         Vz = self.forward_vector_field_half(z, self.V, self.lam)  # (batch_size, num_parts, H_max, W_max)
         Uz = self.forward_vector_field_half(z, self.U, self.lam)  # (batch_size, num_parts, H_max, W_max)
         Vw = self.forward_vector_field_half(w, self.V)            # (batch_size, num_parts, H_max, W_max)
         Uw = self.forward_vector_field_half(w, self.U)            # (batch_size, num_parts, H_max, W_max)
-        VV = self.V @ self.V.T    # (num_parts, num_parts)
-        UU = self.U @ self.U.T    # (num_parts, num_parts)
-        UV = self.U @ self.V.T    # (num_parts, num_parts)
+        
+        U = torch.split(self.U, channels, dim=-1)      # list of (num_parts, channels_i)
+        V = torch.split(self.V, channels, dim=-1)      # list of (num_parts, channels_i)
+
+        VV = []
+        UU = []
+        UV = []
+
+        for Vi, Ui in zip(V, U):
+            VV.append(Vi @ Vi.T)    # (num_parts, num_parts)
+            UU.append(Ui @ Ui.T)    # (num_parts, num_parts)
+            UV.append(Ui @ Vi.T)    # (num_parts, num_parts)
 
         # (VU^t - UV^t)^t(VU^t - UV^t) = VU^tUV^t + UV^tVU^t - VU^tUV^t - UV^tVU^t
         S_zz = torch.zeros(batch_size, num_parts, num_parts, device=device)
-        S_zz = S_zz + torch.einsum('bmhw,bnhw->bmn', Vz, Vz) * UU       # VU^tUV^t
-        S_zz = S_zz + torch.einsum('bmhw,bnhw->bmn', Uz, Uz) * VV       # UV^tVU^t
-        tmp = torch.einsum('bmhw,bnhw->bmn', Vz, Uz) * UV               # VU^tUV^t
+        S_zz = S_zz + self.compute_S(Vz, Vz, UU)    # VU^tUV^t
+        S_zz = S_zz + self.compute_S(Uz, Uz, VV)    # UV^tVU^t
+        tmp = self.compute_S(Vz, Uz, UV)            # VU^tUV^t
         S_zz = S_zz - tmp - tmp.mT
         S_zz = torch.einsum('pm,bmn->bpn', self.W, S_zz)
         S_zz = torch.einsum('qn,bpn->bpq', self.W, S_zz)
@@ -467,7 +506,6 @@ class CoTGlow(torch.nn.Module):
 
         # w^t(eI + v^tv)w= e w^tw + w^tv^tvw
         trace = self.eps * S_ww + torch.einsum('bp,bp->b', S_wz, S_wz)    # (batch_size,)
-        trace = trace * self.log_scale.exp()
 
         I = torch.eye(num_bases, device=device)
         for i in range(10):
@@ -483,13 +521,30 @@ class CoTGlow(torch.nn.Module):
         
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
         logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
-        logdet = logdet + input_dim * self.log_scale
         if self.jacobian_mode == "approx":
-            logdet = logdet + S_ww.add(1e-3).log() +  (input_dim - 1) * math.log(1e-3)
+            logdet = logdet + S_ww.clamp_min(1e-12).log() +  (input_dim - 1) * math.log(1e-3)
+
+        # if self.training:
+        #     s = math.log(input_dim) - trace.mean().log()
+        #     if self.log_scale_init_done.item() == 0:
+        #         self.log_scale.copy_(s.detach().clone())
+        #         self.log_scale_init_done.fill_(1)
+
+        #     s = 0.1 * s + 0.9 * self.log_scale
+
+        #     self.log_scale.copy_(s.detach().clone())
+        # else:
+        #     s = self.log_scale
+
+        s = math.log(input_dim) - trace.log()
+        self.log_scale.copy_(s.mean().detach().clone())
+
+        trace = trace * s.exp()
+        logdet = logdet + input_dim * s
 
         log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
-        return log_prob
+        return log_prob, trace * 0.5, logdet * 0.5
 
     @torch.no_grad()
     def sample(self, num_samples):
@@ -498,11 +553,11 @@ class CoTGlow(torch.nn.Module):
         return x
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-        z, logdet = self.flow.inverse_and_log_det(x)
-        log_prob_x = logdet  # (B,)
+        z, logdet_x = self.flow.inverse_and_log_det(x)
+        trace_x = 0.0
         for zi, q0i in zip(z, self.flow.q0):
-            log_prob_x = log_prob_x + q0i.log_prob(zi)
+            trace_x = trace_x + q0i.log_prob(zi)
+        log_prob_x = trace_x + logdet_x  # (B,)
 
         if self.pretrained_model is None:
             return log_prob_x, torch.zeros_like(log_prob_x)
@@ -511,17 +566,21 @@ class CoTGlow(torch.nn.Module):
 
         w = self.pullback_cotangent(w, z)
 
-        logdet_w = 0.0
-        for i in range(len(w)):
-            norm_wi = w[i].square().mean(dim=(-3, -2, -1)).clamp_min(1e-6).sqrt()
-            w[i] = w[i] / norm_wi.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            logdet_w = logdet_w - torch.log(norm_wi) * w[i][0].numel()  # (B,)
-
-        log_prob_w = self.log_prob(w, z) + logdet_w  # (B,)
         if self.jacobian_mode == "cancel":
-            log_prob_w = log_prob_w - logdet
+            logdet_w = -logdet_x
+        else:
+            logdet_w = 0.0
 
-        return log_prob_x, log_prob_w
+        for wi, norm_i in zip(w, self.norm_cotangent):
+            wi, logdet_i = norm_i.inverse(wi)
+            logdet_w = logdet_w + logdet_i
+
+        log_prob, trace, logdet = self.log_prob(w, z)  # (B,)
+        log_prob_w = log_prob + logdet_w
+        logdet_w = logdet
+        trace_w = trace
+
+        return log_prob_x, log_prob_w, trace_x, trace_w, logdet_x, logdet_w
 
 
 class CoTGlowModule(pl.LightningModule):
@@ -556,13 +615,22 @@ class CoTGlowModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x = batch['image']
-        log_prob_x, log_prob_w = self.model.forward(x)
+        log_prob_x, log_prob_w, trace_x, trace_w, logdet_x, logdet_w = self.model.forward(x)
         log_prob_x = log_prob_x.mean()
         log_prob_w = log_prob_w.mean()
+        trace_x = trace_x.mean()
+        trace_w = trace_w.mean()
+        logdet_x = logdet_x.mean()
+        logdet_w = logdet_w.mean()
         loss = - (log_prob_x + log_prob_w)
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_log_prob_x', log_prob_x, on_step=True, on_epoch=True, prog_bar=False)
         self.log('train_log_prob_w', log_prob_w, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('train_trace_x', trace_x, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('train_trace_w', trace_w, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('train_logdet_x', logdet_x, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('train_logdet_w', logdet_w, on_step=True, on_epoch=True, prog_bar=False)
+        self.log('log_scale', self.model.log_scale.item(), on_step=True, on_epoch=True, prog_bar=False)
 
         # Collect std of Split([z1, z2]) outputs in execution order and log to wandb.
         # Requirement: install/remove hooks and collect data here (line ~548).
@@ -615,7 +683,7 @@ class CoTGlowModule(pl.LightningModule):
         # if split_stats:
         #     wandb_logger = self.logger
         #     if hasattr(wandb_logger, "experiment"):
-        #         table = wandb.Table(columns=["step", "call_index", "z_std"])
+        #         table = wandb.Table(columns=["step", "call_index", "std"])
         #         for i, std in enumerate(split_stats):
         #             table.add_data(self.global_step, i, std)
         #         wandb_logger.experiment.log({"debug/split_output_std_table": table,})
@@ -634,14 +702,22 @@ class CoTGlowModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x = batch['image']
-        log_prob_x, log_prob_w = self.model.forward(x)
+        log_prob_x, log_prob_w, trace_x, trace_w, logdet_x, logdet_w = self.model.forward(x)
         log_prob_x = log_prob_x.mean()
         log_prob_w = log_prob_w.mean()
+        trace_x = trace_x.mean()
+        trace_w = trace_w.mean()
+        logdet_x = logdet_x.mean()
+        logdet_w = logdet_w.mean()
         loss = - (log_prob_x + log_prob_w)
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_log_prob_x', log_prob_x, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_log_prob_w', log_prob_w, on_step=False, on_epoch=True, prog_bar=False)
-        return loss    
+        self.log('val_trace_x', trace_x, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('val_trace_w', trace_w, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('val_logdet_x', logdet_x, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('val_logdet_w', logdet_w, on_step=False, on_epoch=True, prog_bar=False)
+        return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adamax(self.model.parameters(), **self.optimizer_kwargs)
