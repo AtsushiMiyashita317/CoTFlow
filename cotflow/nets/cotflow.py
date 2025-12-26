@@ -524,20 +524,17 @@ class CoTGlow(torch.nn.Module):
         if self.jacobian_mode == "approx":
             logdet = logdet + S_ww.clamp_min(1e-12).log() +  (input_dim - 1) * math.log(1e-3)
 
-        # if self.training:
-        #     s = math.log(input_dim) - trace.mean().log()
-        #     if self.log_scale_init_done.item() == 0:
-        #         self.log_scale.copy_(s.detach().clone())
-        #         self.log_scale_init_done.fill_(1)
+        if self.training:
+            s = math.log(input_dim) - trace.mean().log()
+            if self.log_scale_init_done.item() == 0:
+                self.log_scale.copy_(s.detach().clone())
+                self.log_scale_init_done.fill_(1)
 
-        #     s = 0.1 * s + 0.9 * self.log_scale
+            s = 0.1 * s + 0.9 * self.log_scale
 
-        #     self.log_scale.copy_(s.detach().clone())
-        # else:
-        #     s = self.log_scale
-
-        s = math.log(input_dim) - trace.log()
-        self.log_scale.copy_(s.mean().detach().clone())
+            self.log_scale.copy_(s.detach().clone())
+        else:
+            s = self.log_scale
 
         trace = trace * s.exp()
         logdet = logdet + input_dim * s
