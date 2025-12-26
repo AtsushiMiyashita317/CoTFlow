@@ -105,6 +105,7 @@ def main(cfg: DictConfig):
         logger=wandb_logger,
         log_every_n_steps=cfg.trainer.log_every_n_steps,
         val_check_interval=cfg.trainer.val_check_interval,
+        gradient_clip_val=cfg.trainer.gradient_clip_val,
         default_root_dir=output_dir,
         callbacks=[checkpoint_callback, periodic_checkpoint_callback],
     )
