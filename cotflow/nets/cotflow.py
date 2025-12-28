@@ -284,11 +284,10 @@ class CoTGlow(torch.nn.Module):
         lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 2)
         self.lam = torch.nn.Parameter(lam_data)
 
-        self.register_buffer('log_scale_init_done', torch.tensor(0))
-        self.register_buffer('log_scale', torch.tensor(0.0))
-
+        self.register_buffer('var_init_done', torch.tensor(0))
+        self.register_buffer('var_z', torch.tensor(1.0))
+        self.register_buffer('var_w', torch.tensor(1.0))
         self.register_buffer('eps', torch.tensor(eps))
-        self.register_buffer('var_w', torch.tensor(-1.0))
 
     def _scale_map(self, z: torch.Tensor) -> torch.Tensor:
         z = torch.tanh(z / self.max_log_abs_scale) * self.max_log_abs_scale
@@ -300,7 +299,6 @@ class CoTGlow(torch.nn.Module):
         yield self.V
         yield self.W
         yield self.lam
-        yield self.log_scale
 
     def forward_model(self, x: torch.Tensor) -> torch.Tensor:
         x = x.unsqueeze(0)
@@ -499,13 +497,26 @@ class CoTGlow(torch.nn.Module):
         S_wz = S_wz - torch.einsum('bmhw,bmhw->bm', Uw, Vz)             # UV^t
         S_wz = torch.einsum('pm,bm->bp', self.W, S_wz)
 
-        var = S_zz.diagonal(dim1=-2, dim2=-1).mean(-1).clamp_min(1e-6)      # (batch_size,)
-        std = var.sqrt()
-        S_zz = S_zz / var.unsqueeze(-1).unsqueeze(-1)
-        S_wz = S_wz / std.unsqueeze(-1)
+        S_wzzw = torch.einsum('bp,bp->b', S_wz, S_wz)
 
-        # w^t(eI + v^tv)w= e w^tw + w^tv^tvw
-        trace = self.eps * S_ww + torch.einsum('bp,bp->b', S_wz, S_wz)    # (batch_size,)
+        if self.training:
+            var_w = S_ww.mean()
+            var_z = S_wzzw.mean()
+            if self.var_init_done.item() == 0:
+                self.var_w.fill_(var_w.detach().clone())
+                self.var_z.fill_(var_z.detach().clone())
+                self.var_init_done.fill_(1)
+            var_w = 0.1 * var_w + 0.9 * self.var_w
+            var_z = 0.1 * var_z + 0.9 * self.var_z
+            self.var_w.fill_(var_w.detach().clone())
+            self.var_z.fill_(var_z.detach().clone())
+        else:
+            var_w = self.var_w
+            var_z = self.var_z
+
+        S_ww = S_ww / var_w
+        S_zz = S_zz / var_z
+        S_wzzw = S_wzzw / var_z
 
         I = torch.eye(num_bases, device=device)
         for i in range(10):
@@ -518,26 +529,17 @@ class CoTGlow(torch.nn.Module):
                     raise
                 continue
             break
-        
+
         logdet = 2 * torch.log(torch.diagonal(L_H, dim1=-2, dim2=-1)).sum(-1)
         logdet = logdet + (input_dim - num_bases) * eps.log()   # (batch_size,)
         if self.jacobian_mode == "approx":
             logdet = logdet + S_ww.clamp_min(1e-12).log() +  (input_dim - 1) * math.log(1e-3)
 
-        if self.training:
-            s = math.log(input_dim) - trace.mean().log()
-            if self.log_scale_init_done.item() == 0:
-                self.log_scale.copy_(s.detach().clone())
-                self.log_scale_init_done.fill_(1)
+        # w^t(eI + v^tv)w= e w^tw + w^tv^tvw
+        trace = eps * S_ww + S_wzzw    # (batch_size,)
 
-            s = 0.1 * s + 0.9 * self.log_scale
-
-            self.log_scale.copy_(s.detach().clone())
-        else:
-            s = self.log_scale
-
-        trace = trace * s.exp()
-        logdet = logdet + input_dim * s
+        logdet = logdet + math.log(input_dim) * input_dim
+        trace = trace * input_dim
 
         log_prob = 0.5 * (logdet - trace - input_dim * math.log(2 * math.pi))
 
@@ -629,7 +631,8 @@ class CoTGlowModule(pl.LightningModule):
         self.log('train_trace_w', trace_w, on_step=True, on_epoch=True, prog_bar=False)
         self.log('train_logdet_x', logdet_x, on_step=True, on_epoch=True, prog_bar=False)
         self.log('train_logdet_w', logdet_w, on_step=True, on_epoch=True, prog_bar=False)
-        self.log('log_scale', self.model.log_scale.item(), on_step=True, on_epoch=True, prog_bar=False)
+        self.log('var_w', self.model.var_w.item(), on_step=True, on_epoch=True, prog_bar=False)
+        self.log('var_z', self.model.var_z.item(), on_step=True, on_epoch=True, prog_bar=False)
 
         # Collect std of Split([z1, z2]) outputs in execution order and log to wandb.
         # Requirement: install/remove hooks and collect data here (line ~548).
