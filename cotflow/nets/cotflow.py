@@ -467,7 +467,7 @@ class CoTGlow(torch.nn.Module):
         for Ai, Bi in zip(A, B):
             AA.append(Ai @ Ai.H)    # (num_parts, num_parts)
             BB.append(Bi @ Bi.H)    # (num_parts, num_parts)
-            AB.append(Bi @ Ai.H)    # (num_parts, num_parts)
+            AB.append(Ai @ Bi.H)    # (num_parts, num_parts)
 
         S_zz = torch.zeros(batch_size, num_parts, num_parts, device=device)
         S_zz = S_zz + self.compute_S(Az, Az, BB)
