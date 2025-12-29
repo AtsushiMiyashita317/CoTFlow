@@ -274,14 +274,14 @@ class CoTGlow(torch.nn.Module):
         latent_channels = [shape[0] for shape in self.latent_shapes]
         latent_channels_total = sum(latent_channels)
 
-        V_data = torch.randn(num_parts, latent_channels_total) / latent_channels_total**0.25
-        self.V = torch.nn.Parameter(V_data)
-        U_data = torch.randn(num_parts, latent_channels_total) / latent_channels_total**0.25
-        self.U = torch.nn.Parameter(U_data)
-        W_data = torch.randn(num_bases, num_parts) / num_parts**0.5
-        self.W = torch.nn.Parameter(W_data)
+        A_data = torch.randn(num_parts, latent_channels_total, dtype=torch.cfloat) / latent_channels_total**0.25
+        self.A = torch.nn.Parameter(A_data)
+        B_data = torch.randn(num_parts, latent_channels_total, dtype=torch.cfloat) / latent_channels_total**0.25
+        self.B = torch.nn.Parameter(B_data)
+        C_data = torch.randn(num_bases, num_parts) / num_parts**0.5
+        self.C = torch.nn.Parameter(C_data)
 
-        lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 2)
+        lam_data = torch.randn(num_parts, input_shape[1] // 2, input_shape[2] // 4 + 1)
         self.lam = torch.nn.Parameter(lam_data)
 
         self.register_buffer('var_init_done', torch.tensor(0))
@@ -295,9 +295,9 @@ class CoTGlow(torch.nn.Module):
 
     def parameters(self, recurse = True):
         yield from self.flow.parameters(recurse)
-        yield self.U
-        yield self.V
-        yield self.W
+        yield self.A
+        yield self.B
+        yield self.C
         yield self.lam
 
     def forward_model(self, x: torch.Tensor) -> torch.Tensor:
@@ -326,13 +326,13 @@ class CoTGlow(torch.nn.Module):
             rw = z[-1].size(-1) // wi
             zi_upsampled[..., ::rh, ::rw] = zi
             z_upsampled.append(zi_upsampled)
-        z_upsampled = torch.cat(z_upsampled, dim=-3)  # (batch_size, channels_total, H, W)
-        z_fft = torch.fft.fftn(z_upsampled, dim=(-2, -1))  # (batch_size, channels_total, H, W)
+        z_upsampled = torch.cat(z_upsampled, dim=-3)  #r (batch_size, channels_total, H, W)
+        z_fft = torch.fft.rfftn(z_upsampled, dim=(-2, -1))  # (batch_size, channels_total, H, W)
         return z_fft
 
     def inverse_fft(self, z_fft: torch.Tensor) -> list[torch.Tensor]:
-        z = torch.fft.ifftn(z_fft, dim=(-2, -1)).real  # (batch_size, channels_total, H, W)
-        
+        z = torch.fft.irfftn(z_fft, dim=(-2, -1))  # (batch_size, channels_total, H, W)
+
         latent_channels = [shape[0] for shape in self.latent_shapes]
         z_list = torch.split(z, latent_channels, dim=-3)
 
@@ -396,12 +396,11 @@ class CoTGlow(torch.nn.Module):
         Aa = torch.einsum('mc,bchw->bmhw', A, a)  # (batch_size, num_parts, H, W)
 
         if alpha is not None:
-            alpha = alpha - alpha.flip([1, 2]).roll(shifts=[1, 1], dims=[1, 2])
-            alpha = alpha * 1j
+            alpha = 1j * alpha.sigmoid()
+            alpha[:, 0, 0] = 0.0 + 0.0j
+            Aa = alpha.unsqueeze(0) * Aa  # (batch_size, num_parts, H, W)
 
-            Aa_fft = torch.fft.fftn(Aa, dim=(-2, -1))  # (batch_size, num_parts, H, W)
-            Aa_fft = alpha.unsqueeze(0) * Aa_fft  # (batch_size, num_parts, H, W)
-            Aa = torch.fft.ifftn(Aa_fft, dim=(-2, -1)).real  # (batch_size, num_parts, H, W)
+        Aa = torch.fft.irfftn(Aa, dim=(-2, -1))  # (batch_size, num_parts, H, W)
         
         return Aa  # (batch_size, num_parts, H, W)
     
@@ -423,7 +422,7 @@ class CoTGlow(torch.nn.Module):
             rw = width_max // wi
             Az_i = Az[..., ::rh, ::rw]  # (batch_size, num_parts, hi, wi)
             Bz_i = Bz[..., ::rh, ::rw]  # (batch_size, num_parts, hi, wi)
-            out = out + torch.einsum('bmhw,bnhw->bmn', Az_i, Bz_i) * CDi
+            out = out + torch.einsum('bmhw,bnhw->bmn', Az_i, Bz_i) * 2 * CDi.real
 
         return out
 
@@ -447,55 +446,41 @@ class CoTGlow(torch.nn.Module):
         if self.jacobian_mode == "approx":
             w = [wi + torch.randn_like(wi) * 1e-3 ** 0.5 for wi in w]
 
-        # upsampling
-        w_upsampled = []
-        z_upsampled = []
-        for wi, zi, shape_i in zip(w, z, self.latent_shapes):
-            hi, wi_ = shape_i[1], shape_i[2]
-            rh = height_max // hi
-            rw = width_max // wi_
-            wi_upsampled = torch.zeros((wi.size(0), wi.size(1), height_max, width_max), device=wi.device)
-            zi_upsampled = torch.zeros((zi.size(0), zi.size(1), height_max, width_max), device=zi.device)
-            wi_upsampled[..., ::rh, ::rw] = wi
-            zi_upsampled[..., ::rh, ::rw] = zi
-            w_upsampled.append(wi_upsampled)
-            z_upsampled.append(zi_upsampled)
-        w = torch.cat(w_upsampled, dim=-3)  # (batch_size, channels_total, H, W)
-        z = torch.cat(z_upsampled, dim=-3)  # (batch_size, channels_total, H, W)
+        w_fft = self.forward_fft(*w)  # (batch_size, channels_total, H_max, W_max)
+        z_fft = self.forward_fft(*z)  # (batch_size, channels_total, H_max, W_max)
 
+        w = torch.fft.irfftn(w_fft, dim=(-2, -1))  # (batch_size, channels_total, H_max, W_max)
         S_ww = torch.einsum('bchw,bchw->b', w, w)    # (batch_size,)
 
-        Vz = self.forward_vector_field_half(z, self.V, self.lam)  # (batch_size, num_parts, H_max, W_max)
-        Uz = self.forward_vector_field_half(z, self.U, self.lam)  # (batch_size, num_parts, H_max, W_max)
-        Vw = self.forward_vector_field_half(w, self.V)            # (batch_size, num_parts, H_max, W_max)
-        Uw = self.forward_vector_field_half(w, self.U)            # (batch_size, num_parts, H_max, W_max)
-        
-        U = torch.split(self.U, channels, dim=-1)      # list of (num_parts, channels_i)
-        V = torch.split(self.V, channels, dim=-1)      # list of (num_parts, channels_i)
+        Az = self.forward_vector_field_half(z_fft, self.A, self.lam)  # (batch_size, num_parts, H_max, W_max)
+        Bz = self.forward_vector_field_half(z_fft, self.B, self.lam)  # (batch_size, num_parts, H_max, W_max)
+        Aw = self.forward_vector_field_half(w_fft, self.A)            # (batch_size, num_parts, H_max, W_max)
+        Bw = self.forward_vector_field_half(w_fft, self.B)            # (batch_size, num_parts, H_max, W_max)
 
-        VV = []
-        UU = []
-        UV = []
+        A = torch.split(self.A, channels, dim=-1)      # list of (num_parts, channels_i)
+        B = torch.split(self.B, channels, dim=-1)      # list of (num_parts, channels_i)
 
-        for Vi, Ui in zip(V, U):
-            VV.append(Vi @ Vi.T)    # (num_parts, num_parts)
-            UU.append(Ui @ Ui.T)    # (num_parts, num_parts)
-            UV.append(Ui @ Vi.T)    # (num_parts, num_parts)
+        AA = []
+        BB = []
+        AB = []
 
-        # (VU^t - UV^t)^t(VU^t - UV^t) = VU^tUV^t + UV^tVU^t - VU^tUV^t - UV^tVU^t
+        for Ai, Bi in zip(A, B):
+            AA.append(Ai @ Ai.H)    # (num_parts, num_parts)
+            BB.append(Bi @ Bi.H)    # (num_parts, num_parts)
+            AB.append(Bi @ Ai.H)    # (num_parts, num_parts)
+
         S_zz = torch.zeros(batch_size, num_parts, num_parts, device=device)
-        S_zz = S_zz + self.compute_S(Vz, Vz, UU)    # VU^tUV^t
-        S_zz = S_zz + self.compute_S(Uz, Uz, VV)    # UV^tVU^t
-        tmp = self.compute_S(Vz, Uz, UV)            # VU^tUV^t
-        S_zz = S_zz - tmp - tmp.mT
-        S_zz = torch.einsum('pm,bmn->bpn', self.W, S_zz)
-        S_zz = torch.einsum('qn,bpn->bpq', self.W, S_zz)
+        S_zz = S_zz + self.compute_S(Az, Az, BB)
+        S_zz = S_zz + self.compute_S(Bz, Bz, AA)
+        tmp = self.compute_S(Bz, Az, AB)
+        S_zz = S_zz + tmp + tmp.mT
+        S_zz = torch.einsum('pm,bmn->bpn', self.C, S_zz)
+        S_zz = torch.einsum('qn,bpn->bpq', self.C, S_zz)
         
-        # VU^t - UV^t
         S_wz = torch.zeros(batch_size, num_parts, device=device)
-        S_wz = S_wz + torch.einsum('bmhw,bmhw->bm', Vw, Uz)             # VU^t
-        S_wz = S_wz - torch.einsum('bmhw,bmhw->bm', Uw, Vz)             # UV^t
-        S_wz = torch.einsum('pm,bm->bp', self.W, S_wz)
+        S_wz = S_wz + torch.einsum('bmhw,bmhw->bm', Aw, Bz)
+        S_wz = S_wz + torch.einsum('bmhw,bmhw->bm', Bw, Az)
+        S_wz = torch.einsum('pm,bm->bp', self.C, S_wz)
 
         S_wzzw = torch.einsum('bp,bp->b', S_wz, S_wz)
 
