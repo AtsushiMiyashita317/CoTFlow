@@ -509,7 +509,7 @@ class CoTGlow(torch.nn.Module):
             M = S_zz + eps.unsqueeze(-1).unsqueeze(-1) * I               # (batch_size, num_bases, num_bases)
             try:
                 L_H = torch.linalg.cholesky(M)
-            except RuntimeError:
+            except Exception:
                 if i == 9:
                     raise
                 continue
